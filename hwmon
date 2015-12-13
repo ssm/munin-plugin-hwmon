@@ -1,0 +1,263 @@
+#!/bin/sh
+
+: <<EOF
+=head1 NAME
+
+hwmon - Plugin to monitor hwmon sensors of various flavours
+
+=head1 ABOUT
+
+This plugin uses the sysfs interface on Linux to monitor. See the
+L<hwmon sysfs interface
+documentation|https://www.kernel.org/doc/Documentation/hwmon/sysfs-interface>
+
+This plugin will graph voltages, fans, temperatures, currents, power,
+energy and humidity sensors.  It is a multigraph plugin, generating
+one graph per hwmon instance visible in F</sys/class/hwmon>.
+
+Limits for warnings and criticals are read from the limits configured
+in hwmon (max, min, lcrit, crit).
+
+=head1 CONFIGURATION
+
+No plugin specific configuration.
+
+=head1 REQUIREMENTS
+
+This is a multigraph plugin, and requires munin-node 1.4.0 or later.
+
+This plugin needs read permission for F</sys>. This is usually only an
+issue on systems with selinux.
+
+=head1 AUTHOR
+
+2015 Stig Sandbeck Mathisen
+
+=head1 LICENSE
+
+GPLv3 or later
+
+=head1 MAGIC MARKERS
+
+ #%# family=auto
+ #%# capabilities=autoconf
+
+=cut
+
+EOF
+
+list_hwmon_instances() {
+    find /sys/class/hwmon/ -type l -print0 \
+        | xargs -0 -n1 -r readlink -f \
+        | while read dir; do
+              if [ -e "${dir}/name" ]; then
+                  readlink -f "${dir}"
+              fi
+              if [ -e "${dir}/device/name" ]; then
+                  readlink -f "${dir}/device"
+              fi
+          done
+}
+
+list_input_files_for_instance() {
+    dir="$1"
+    ls "${dir}"/*_input
+}
+
+get_name_for_instance_dir() {
+    instance_dir="$1"
+    name_file="${instance_dir}/name"
+    cp "$name_file" /dev/stdout
+
+}
+
+get_type_name_from_type() {
+    type="$1"
+
+    case $type in
+        in)
+            echo voltage
+            ;;
+        temp)
+            echo temperature
+            ;;
+        curr)
+            echo current
+            ;;
+        *)
+            printf "%s\n" "$type"
+            ;;
+    esac
+}
+
+get_types_in_instance_dir() {
+    instance_dir="$1"
+    for thing in in fan temp curr power energy humidity; do
+        find "$instance_dir" -maxdepth 1 -follow -type f \
+             -name "${thing}[0-9]*_input" \
+            | grep -q _input && printf "%s\n" "$thing"
+    done
+}
+
+get_fieldname_for_input_file() {
+    input_file="$1"
+    file_name="${input_file##*/}"
+    field_name="${file_name%_input}"
+    clean_fieldname "$field_name"
+}
+
+get_label_for_input_file() {
+    input_file="$1"
+    label_file="${input_file%_input}_label"
+    if [ -e "$label_file" ]; then
+        cp "$label_file" /dev/stdout
+    else
+        input_filename="${input_file##*/}"
+        printf "%s\n" "${input_filename%%_input}"
+    fi
+}
+
+print_limits_for_input_file() {
+    input="$1"
+
+    warning_low_file="${input%_input}_min"
+    warning_high_file="${input%_input}_max"
+    critical_low_file="${input%_input}_lcrit"
+    critical_high_file="${input%_input}_crit"
+
+    if [ -e "$warning_low_file" ]; then
+        warning_low_value=$(cat "$warning_low_file")
+    fi
+    if [ -e "$warning_high_file" ]; then
+        warning_high_value=$(cat "$warning_high_file")
+    fi
+    if [ -e "$critical_low_file" ]; then
+        critical_low_value=$(cat "$critical_low_file")
+    fi
+    if [ -e "$critical_high_file" ]; then
+        critical_high_value=$(cat "$critical_high_file")
+    fi
+
+    fieldname=$(get_fieldname_for_input_file "$input")
+
+    if [ -n "$critical_low_value" -a -n "$critical_high_value" ]; then
+        critical=$(printf "%s:%s" "$critical_low_value" "$critical_high_value")
+    elif [ -n "$critical_low_value" ]; then
+        critical=$(printf "%s:" "$critical_low_value")
+    elif [ -n "$critical_high_value" ]; then
+        critical=$(printf ":%s\n" "$critical_high_value")
+    fi
+
+    if [ -n "$warning_low_value" -a -n "$warning_high_value" ]; then
+        warning=$(printf "%s:%s\n" "$warning_low_value" "$warning_high_value")
+    elif [ -n "$warning_low_value" ]; then
+        warning=$(printf "%s:\n" "$warning_low_value")
+    elif [ -n "$warning_high_value" ]; then
+        warning=$(printf ":%s\n" "$warning_high_value")
+    fi
+
+    if [ -n "$warning" ]; then
+       printf "%s.warning %s\n" "$fieldname" "$warning"
+    fi
+
+    if [ -n "$critical" ]; then
+       printf "%s.critical %s\n" "$fieldname" "$critical"
+    fi
+
+}
+
+get_value_for_input_file() {
+    input="$1"
+    cp "$input" /dev/stdout
+}
+
+print_ds_config_for_field_sensor_type() {
+    field="$1"
+    sensor_type="$1"
+
+    case "$sensor_type" in
+        energy)
+            printf "%s.type DERIVE\n" "$field"
+            printf "%s.min 0\n" "$field"
+            ;;
+        *)
+            printf "%s.type GAUGE\n" "$field"
+            ;;
+    esac
+}
+
+autoconf() {
+    dir="/sys/class/hwmon"
+    if [ -d "$dir" ]; then
+        if [ "$(find $dir -maxdepth 1 -mindepth 1 -type l | wc -l)" != 0 ]; then
+            printf "yes\n"
+        else
+            printf "no (%s is empty)" "$dir"
+        fi
+    else
+        printf "no (%s not found)\n" "$dir"
+    fi
+}
+
+config() {
+    list_hwmon_instances |
+        while read instance_dir; do
+            get_types_in_instance_dir "$instance_dir" |
+                while read sensor_type; do
+                    instance_name=$(get_name_for_instance_dir "$instance_dir")
+                    multigraph_instance=$(clean_fieldname "${instance_dir}:${sensor_type}")
+                    sensor_type_name=$(get_type_name_from_type "$sensor_type")
+
+                    # Graph config
+                    printf "multigraph %s\n" "$multigraph_instance"
+                    printf "graph_title %s sensors for %s\n" "$sensor_type" "$instance_name"
+                    printf "graph_info This graph shows %s sensors for %s, read from %s\n" \
+                           "$sensor_type_name" "$instance_name" "$instance_dir"
+                    printf "graph_category system\n"
+
+                    # Config per rrd ds
+                    list_input_files_for_instance "$instance_dir" |
+                        while read input_file; do
+                            fieldname=$(get_fieldname_for_input_file "$input_file")
+                            label=$(get_label_for_input_file "$input_file")
+                            printf "%s.label %s\n" "$fieldname" "$label"
+                            print_ds_config_for_field_sensor_type "$fieldname" "$sensor_type"
+                            print_limits_for_input_file "$input_file"
+                        done
+                done
+        done
+}
+
+values() {
+    list_hwmon_instances |
+        while read instance_dir; do
+            get_types_in_instance_dir "$instance_dir" |
+                while read sensor_type; do
+                    instance_name=$(get_name_for_instance_dir "$instance_dir")
+                    multigraph_instance=$(clean_fieldname "${instance_dir}:${sensor_type}")
+                    printf "multigraph %s\n" "$multigraph_instance"
+                    list_input_files_for_instance "$instance_dir" |
+                        while read input_file; do
+                            fieldname=$(get_fieldname_for_input_file "$input_file")
+                            value=$(get_value_for_input_file "$input_file")
+                            printf "%s.value %s\n" "$fieldname" "$value"
+                        done
+                done
+        done
+}
+
+. /usr/share/munin/plugins/plugin.sh
+
+is_multigraph "$1"
+
+case "$1" in
+    autoconf)
+        autoconf
+        ;;
+    config)
+        config
+        ;;
+    "")
+        values
+        ;;
+esac
