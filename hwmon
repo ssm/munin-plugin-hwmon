@@ -246,7 +246,12 @@ values() {
         done
 }
 
-. /usr/share/munin/plugins/plugin.sh
+if [ -n "$MUNIN_LIBDIR" ]; then
+  . $MUNIN_LIBDIR/plugins/plugin.sh
+else
+  echo 'Error: $MUNIN_LIBDIR not set. Aborting.'
+  exit 1
+fi
 
 is_multigraph "$1"
 
