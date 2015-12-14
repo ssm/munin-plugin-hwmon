@@ -261,6 +261,9 @@ case "$1" in
         ;;
     config)
         config
+        if [ -n "$MUNIN_CAP_DIRTYCONFIG" ]; then
+          values
+        fi
         ;;
     "")
         values
