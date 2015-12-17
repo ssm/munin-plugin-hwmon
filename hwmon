@@ -60,21 +60,46 @@ list_hwmon_instances() {
 }
 
 list_input_files_for_instance() {
-    dir="$1"
+    local dir="$1"
     ls "${dir}"/*_input
 }
 
 get_name_for_instance_dir() {
-    instance_dir="$1"
-    name_file="${instance_dir}/name"
+    local instance_dir="$1"
+    local name_file="${instance_dir}/name"
     cp "$name_file" /dev/stdout
 
 }
 
-get_type_name_from_type() {
-    type="$1"
+get_vlabel_for_type() {
+    local sensor_type="$1"
 
-    case $type in
+    case $sensor_type in
+        in)
+            echo Volt
+            ;;
+        temp)
+            echo degrees Celcius
+            ;;
+        curr)
+            echo Ampere
+            ;;
+        energy)
+            echo Joule
+            ;;
+        power)
+            echo Watt
+            ;;
+        *)
+            printf "%s\n" "$type"
+            ;;
+    esac
+}
+
+get_type_name_from_type() {
+    local sensor_type="$1"
+
+    case $sensor_type in
         in)
             echo voltage
             ;;
@@ -91,7 +116,7 @@ get_type_name_from_type() {
 }
 
 get_types_in_instance_dir() {
-    instance_dir="$1"
+    local instance_dir="$1"
     for thing in in fan temp curr power energy humidity; do
         find "$instance_dir" -maxdepth 1 -follow -type f \
              -name "${thing}[0-9]*_input" \
@@ -100,15 +125,33 @@ get_types_in_instance_dir() {
 }
 
 get_fieldname_for_input_file() {
-    input_file="$1"
+    local input_file="$1"
     file_name="${input_file##*/}"
     field_name="${file_name%_input}"
     clean_fieldname "$field_name"
 }
 
+convert_value_for_type() {
+        local value="$1"
+        local sensor_type="$2"
+
+        case "$sensor_type" in
+                energy)
+                        expr "$value" / 1000000
+                        ;;
+                curr|in|humidity|power|temp)
+                        expr "$value" / 1000
+                        ;;
+                *)
+                        printf "%d\n" "$value"
+                        ;;
+        esac
+
+}
+
 get_label_for_input_file() {
-    input_file="$1"
-    label_file="${input_file%_input}_label"
+    local input_file="$1"
+    local label_file="${input_file%_input}_label"
     if [ -e "$label_file" ]; then
         cp "$label_file" /dev/stdout
     else
@@ -118,7 +161,8 @@ get_label_for_input_file() {
 }
 
 print_limits_for_input_file() {
-    input="$1"
+    local input="$1"
+    local sensor_type="$2"
 
     warning_low_file="${input%_input}_min"
     warning_high_file="${input%_input}_max"
@@ -127,15 +171,19 @@ print_limits_for_input_file() {
 
     if [ -e "$warning_low_file" ]; then
         warning_low_value=$(cat "$warning_low_file")
+        warning_low_value=$(convert_value_for_type "$warning_low_value" "$sensor_type")
     fi
     if [ -e "$warning_high_file" ]; then
         warning_high_value=$(cat "$warning_high_file")
+        warning_high_value=$(convert_value_for_type "$warning_high_value" "$sensor_type")
     fi
     if [ -e "$critical_low_file" ]; then
         critical_low_value=$(cat "$critical_low_file")
+        critical_low_value=$(convert_value_for_type "$critical_low_value" "$sensor_type")
     fi
     if [ -e "$critical_high_file" ]; then
         critical_high_value=$(cat "$critical_high_file")
+        critical_high_value=$(convert_value_for_type "$critical_high_value" "$sensor_type")
     fi
 
     fieldname=$(get_fieldname_for_input_file "$input")
@@ -167,13 +215,13 @@ print_limits_for_input_file() {
 }
 
 get_value_for_input_file() {
-    input="$1"
+    local input="$1"
     cp "$input" /dev/stdout
 }
 
 print_ds_config_for_field_sensor_type() {
-    field="$1"
-    sensor_type="$1"
+    local field="$1"
+    local sensor_type="$1"
 
     case "$sensor_type" in
         energy)
@@ -204,16 +252,19 @@ config() {
         while read instance_dir; do
             get_types_in_instance_dir "$instance_dir" |
                 while read sensor_type; do
+                    local sensor_type
                     instance_name=$(get_name_for_instance_dir "$instance_dir")
                     multigraph_instance=$(clean_fieldname "${instance_dir}:${sensor_type}")
                     sensor_type_name=$(get_type_name_from_type "$sensor_type")
+                    vlabel=$(get_vlabel_for_type "$sensor_type")
 
                     # Graph config
                     printf "multigraph %s\n" "$multigraph_instance"
                     printf "graph_title %s sensors for %s\n" "$sensor_type" "$instance_name"
                     printf "graph_info This graph shows %s sensors for %s, read from %s\n" \
                            "$sensor_type_name" "$instance_name" "$instance_dir"
-                    printf "graph_category system\n"
+                    printf "graph_category sensors\n"
+                    printf "graph_vlabel %s\n" "$vlabel"
 
                     # Config per rrd ds
                     list_input_files_for_instance "$instance_dir" |
@@ -222,7 +273,7 @@ config() {
                             label=$(get_label_for_input_file "$input_file")
                             printf "%s.label %s\n" "$fieldname" "$label"
                             print_ds_config_for_field_sensor_type "$fieldname" "$sensor_type"
-                            print_limits_for_input_file "$input_file"
+                            print_limits_for_input_file "$input_file" "$sensor_type"
                         done
                 done
         done
@@ -240,6 +291,7 @@ values() {
                         while read input_file; do
                             fieldname=$(get_fieldname_for_input_file "$input_file")
                             value=$(get_value_for_input_file "$input_file")
+                            value=$(convert_value_for_type "$value" "$sensor_type")
                             printf "%s.value %s\n" "$fieldname" "$value"
                         done
                 done
