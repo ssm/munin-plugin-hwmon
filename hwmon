@@ -78,6 +78,9 @@ get_vlabel_for_type() {
         in)
             echo Volt
             ;;
+	fan)
+	    echo RPM
+	    ;;
         temp)
             echo degrees Celcius
             ;;
