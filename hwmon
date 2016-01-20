@@ -71,6 +71,14 @@ get_name_for_instance_dir() {
 
 }
 
+get_multigraph_instance() {
+    local instance_dir="$1"
+    local sensor_type="$2"
+
+    local instance=$(printf "hwmon_%s:%s\n" "${instance_dir#/sys/devices/}" "${sensor_type}")
+    clean_fieldname "$instance"
+}
+
 get_vlabel_for_type() {
     local sensor_type="$1"
 
@@ -257,7 +265,7 @@ config() {
                 while read sensor_type; do
                     local sensor_type
                     instance_name=$(get_name_for_instance_dir "$instance_dir")
-                    multigraph_instance=$(clean_fieldname "${instance_dir}:${sensor_type}")
+                    multigraph_instance=$(get_multigraph_instance "$instance_dir" "$sensor_type")
                     sensor_type_name=$(get_type_name_from_type "$sensor_type")
                     vlabel=$(get_vlabel_for_type "$sensor_type")
 
@@ -288,7 +296,7 @@ values() {
             get_types_in_instance_dir "$instance_dir" |
                 while read sensor_type; do
                     instance_name=$(get_name_for_instance_dir "$instance_dir")
-                    multigraph_instance=$(clean_fieldname "${instance_dir}:${sensor_type}")
+                    multigraph_instance=$(get_multigraph_instance "$instance_dir" "$sensor_type")
                     printf "multigraph %s\n" "$multigraph_instance"
                     list_input_files_for_instance "$instance_dir" |
                         while read input_file; do
